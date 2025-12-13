@@ -1,0 +1,14 @@
+{
+  "name": "whatsapp-cloud-api-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Chatbot usando WhatsApp Cloud API (Meta)",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "axios": "^1.6.8"
+  }
+}
