@@ -1,5 +1,9 @@
 import express from "express";
 import axios from "axios";
+const OpenAI = require("openai");
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 const app = express();
 app.use(express.json());
@@ -42,7 +46,35 @@ app.post("/webhook", async (req, res) => {
 
     console.log("Mensagem recebida:", text);
 
-    await enviarMensagem(from, `Olá 👋\nSou o *Seu Suporte* 🤖\n\nRecebi sua mensagem:\n"${text}"`);
+    const userMessage = messageText; // texto que o cliente enviou
+
+const completion = await openai.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [
+    {
+      role: "system",
+      content: `
+Você é um vendedor profissional da empresa "O Seu Suporte".
+
+Função:
+- Atender clientes pelo WhatsApp
+- Responder dúvidas
+- Explicar o curso
+- Informar preços
+- Incentivar a compra
+- Ser educado e humano
+- Nunca dizer que é uma IA
+`
+    },
+    {
+      role: "user",
+      content: userMessage
+    }
+  ]
+});
+
+const reply = completion.choices[0].message.content;
+:\n"${text}"`);
 
     res.sendStatus(200);
   } catch (error) {
