@@ -46,6 +46,7 @@ app.post("/webhook", async (req, res) => {
 
     console.log("Mensagem recebida:", text);
 
+    wait enviarMensagem(from, \n"${text}"`); 
     const userMessage = messageText; // texto que o cliente enviou
 
 const completion = await openai.chat.completions.create({
