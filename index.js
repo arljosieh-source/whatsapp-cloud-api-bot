@@ -1,18 +1,20 @@
 import express from "express";
 import axios from "axios";
-const OpenAI = require("openai");
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+import OpenAI from "openai";
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
+// CLIENTE OPENAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
+
 // ROTA DE TESTE
 app.get("/", (req, res) => {
-  res.send("🤖 Chatbot WhatsApp Cloud API está online!");
+  res.send("Chatbot WhatsApp Cloud API está online!");
 });
 
 // WEBHOOK DE VERIFICAÇÃO (META)
@@ -25,10 +27,10 @@ app.get("/webhook", (req, res) => {
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("Webhook verificado com sucesso!");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+    return res.status(200).send(challenge);
   }
+
+  return res.sendStatus(403);
 });
 
 // RECEBER MENSAGENS DO WHATSAPP
@@ -39,22 +41,26 @@ app.post("/webhook", async (req, res) => {
     const value = changes?.value;
     const message = value?.messages?.[0];
 
-    if (!message) return res.sendStatus(200);
+    if (!message) {
+      return res.sendStatus(200);
+    }
 
     const from = message.from;
-    const text = message.text?.body;
+    const userMessage = message.text?.body;
 
-    console.log("Mensagem recebida:", text);
+    if (!userMessage) {
+      return res.sendStatus(200);
+    }
 
-    wait enviarMensagem(from, \n"${text}"`); 
-    const userMessage = messageText; // texto que o cliente enviou
+    console.log("Mensagem recebida:", userMessage);
 
-const completion = await openai.chat.completions.create({
-  model: "gpt-4o-mini",
-  messages: [
-    {
-      role: "system",
-      content: `
+    // CHAMADA À OPENAI
+    const response = await openai.responses.create({
+      model: "gpt-4o-mini",
+      input: [
+        {
+          role: "system",
+          content: `
 Você é um vendedor profissional da empresa "O Seu Suporte".
 
 Função:
@@ -65,22 +71,24 @@ Função:
 - Incentivar a compra
 - Ser educado e humano
 - Nunca dizer que é uma IA
-`
-    },
-    {
-      role: "user",
-      content: userMessage
-    }
-  ]
-});
+          `
+        },
+        {
+          role: "user",
+          content: userMessage
+        }
+      ]
+    });
 
-const reply = completion.choices[0].message.content;
-:\n"${text}"`);
+    const reply = response.output_text || "Desculpe, não consegui responder agora.";
 
-    res.sendStatus(200);
+    // ENVIA RESPOSTA PARA O WHATSAPP
+    await enviarMensagem(from, reply);
+
+    return res.sendStatus(200);
   } catch (error) {
-    console.error(error);
-    res.sendStatus(500);
+    console.error("Erro no webhook:", error);
+    return res.sendStatus(500);
   }
 });
 
