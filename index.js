@@ -2,10 +2,6 @@ import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
 import fs from "fs";
-function log(tipo, mensagem, extra = "") {
-  const time = new Date().toISOString();
-  console.log(`[${time}] [${tipo}] ${mensagem}`, extra);
-}
 
 const HUMAN_WHATSAPP_NUMBER = "+393420261950";
 
@@ -390,6 +386,12 @@ Venda como um humano experiente no WhatsApp.
 `;
 }
 
+function logSistema(tipo, mensagem, extra = "") {
+  const log = `[${new Date().toISOString()}] [${tipo}] ${mensagem} ${extra}\n`;
+  console.log(log);
+  fs.appendFileSync("logs_sistema.txt", log);
+}
+
 // ====== ROTAS ======
 app.get("/", (req, res) => res.send("✅ Sia Mega WhatsApp Bot online"));
 
@@ -419,7 +421,11 @@ app.post("/webhook", async (req, res) => {
 
     if (!userMessageRaw) return res.sendStatus(200);
 
-    console.log("📩 Mensagem recebida:", userMessageRaw);
+    logSistema(
+  "MENSAGEM_RECEBIDA",
+  `Número ${from}`,
+  `Texto: "${userMessageRaw}"`
+);
     
     const userText = normalize(userMessageRaw);
     const session = getSession(from);
@@ -434,6 +440,11 @@ app.post("/webhook", async (req, res) => {
         `Você quer usar mais pra aprender do zero ou pra começar a gerar renda o quanto antes?`;
 
       await humanDelay(reply);
+      logSistema(
+  "RESPOSTA_ENVIADA",
+  `Para ${from}`,
+  `Texto: "${reply}"`
+);
       await enviarMensagem(from, reply);
       return res.sendStatus(200);
     }
@@ -530,9 +541,13 @@ registrarLeadQuente({
 
     return res.sendStatus(200);
   } catch (error) {
-    console.error("❌ Erro no webhook:", error?.response?.data || error);
-    return res.sendStatus(500);
-  }
+  logSistema(
+    "ERRO",
+    "Falha no webhook",
+    error?.response?.data || error?.message || error
+  );
+  return res.sendStatus(500);
+}
 });
 
 app.listen(PORT, () => console.log(`🚀 Rodando na porta ${PORT}`));
