@@ -2,6 +2,10 @@ import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
 import fs from "fs";
+function log(tipo, mensagem, extra = "") {
+  const time = new Date().toISOString();
+  console.log(`[${time}] [${tipo}] ${mensagem}`, extra);
+}
 
 const HUMAN_WHATSAPP_NUMBER = "+393420261950";
 
