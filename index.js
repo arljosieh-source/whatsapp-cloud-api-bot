@@ -2,6 +2,8 @@ import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
 
+const HUMAN_WHATSAPP_NUMBER = "+393420261950";
+
 const app = express();
 app.use(express.json());
 
@@ -30,6 +32,27 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // ====== MEMÓRIA (contexto simples por número) ======
 const sessions = new Map();
+function isHotLead(session, userText) {
+  const t = userText.toLowerCase();
+
+  const intentBuy = [
+    "quero comprar",
+    "mandar o link",
+    "manda o link",
+    "como pagar",
+    "pix",
+    "cartao",
+    "cartão",
+    "vou comprar",
+    "fechar"
+  ].some(w => t.includes(w));
+
+  const priceObjection = session.saidExpensiveCount >= 1 && session.priceAlreadyExplained;
+
+  const highEngagement = (session.history?.length || 0) >= 6;
+
+  return intentBuy || priceObjection || highEngagement;
+}
 /**
  * sessions.get(from) = {
  *   history: [{role, content}],
@@ -135,6 +158,25 @@ async function enviarMensagem(para, texto) {
       messaging_product: "whatsapp",
       to: para,
       text: { body: texto },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+}
+// 🚨 AVISA O HUMANO QUANDO DETECTAR LEAD QUENTE
+async function avisarHumano(texto) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      to: HUMAN_WHATSAPP_NUMBER,
+      text: {
+        body: `🔥 LEAD QUENTE DETECTADO 🔥\n\n${texto}`
+      }
     },
     {
       headers: {
