@@ -435,9 +435,31 @@ app.post("/webhook", async (req, res) => {
 
     // B) Cliente quer comprar/pagar -> manda link (com controle anti-spam)
     if (isCheckoutIntent(userText)) {
+
+      // 🚨 LEAD QUENTE DETECTADO
+const motivoLead = "Cliente demonstrou intenção clara de compra";
+
+await avisarHumano(`
+Número: ${from}
+Motivo: ${motivoLead}
+Mensagem do cliente: "${userMessage}"
+`);
+
+registrarLeadQuente({
+  phone: from,
+  motivo: motivoLead,
+  mensagem: userMessage
+});
+
       await avisarHumano(
   `Cliente ${from} quer comprar.\nMensagem: "${userMessageRaw}"`
 );
+      registrarLeadQuente({
+  phone: from,
+  motivo: "Pedido de compra / Lead quente",
+  mensagem: userMessageRaw
+});
+
       if (!canSendLink(session)) {
         const reply =
           "Perfeito. Só pra eu te orientar direitinho: você prefere pagar à vista ou parcelar?";
