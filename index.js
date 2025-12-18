@@ -422,6 +422,9 @@ app.post("/webhook", async (req, res) => {
 
     // B) Cliente quer comprar/pagar -> manda link (com controle anti-spam)
     if (isCheckoutIntent(userText)) {
+      await avisarHumano(
+  `Cliente ${from} quer comprar.\nMensagem: "${userMessageRaw}"`
+);
       if (!canSendLink(session)) {
         const reply =
           "Perfeito. Só pra eu te orientar direitinho: você prefere pagar à vista ou parcelar?";
