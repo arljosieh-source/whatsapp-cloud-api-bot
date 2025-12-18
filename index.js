@@ -499,6 +499,10 @@ registrarLeadQuente({
     if (isExpensiveObjection(userText)) {
       session.saidExpensiveCount += 1;
     }
+    
+logStep("FLUXO_IA", {
+  historico: session.history.length
+});
 
     // 2) IA (resposta conversacional)
     const systemPrompt = buildSystemPrompt();
