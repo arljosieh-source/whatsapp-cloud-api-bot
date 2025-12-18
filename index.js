@@ -1,6 +1,7 @@
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
+import fs from "fs";
 
 const HUMAN_WHATSAPP_NUMBER = "+393420261950";
 
@@ -187,6 +188,18 @@ async function avisarHumano(texto) {
   );
 }
 
+function registrarLeadQuente({ phone, motivo, mensagem }) {
+  const log = `
+========================
+DATA: ${new Date().toLocaleString()}
+NUMERO: ${phone}
+MOTIVO: ${motivo}
+MENSAGEM: ${mensagem}
+========================
+`;
+
+  fs.appendFileSync("leads_quentes.txt", log);
+}
 // ====== PROMPT (com objeções) ======
 function buildSystemPrompt() {
   return `
