@@ -415,10 +415,11 @@ app.post("/webhook", async (req, res) => {
 
     if (!userMessageRaw) return res.sendStatus(200);
 
+    console.log("📩 Mensagem recebida:", userMessageRaw);
+    
     const userText = normalize(userMessageRaw);
     const session = getSession(from);
 
-    console.log("📩 Mensagem recebida:", userMessageRaw);
 
     // 1) Regras rápidas (sem IA) para controlar preço e link
     // A) Pergunta de preço -> resposta padrão (não manda 3 valores)
