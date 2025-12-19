@@ -3,7 +3,7 @@ import axios from "axios";
 import OpenAI from "openai";
 import fs from "fs";
 
-// ===================== CONFIGURAÇÃO =====================
+// ===================== CONFIG =====================
 const app = express();
 app.use(express.json());
 
@@ -14,10 +14,9 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Número humano que recebe aviso
 const HUMAN_WHATSAPP_NUMBER = "+393420261950";
 
-// Produto
+// ===================== PRODUTO =====================
 const PRODUCT_NAME = "Mapa Diamond";
 const PRICE_FULL = "299";
 const PRICE_OFFER = "195";
@@ -28,74 +27,56 @@ const LINK_FULL = "https://pay.kiwify.com.br/UnJnvII";
 const LINK_SPECIAL = "https://pay.kiwify.com.br/hfNCals";
 
 // ===================== OPENAI =====================
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ===================== MEMÓRIA EM RAM =====================
+// ===================== MEMÓRIA RAM =====================
 const sessions = new Map();
 
 function getSession(from) {
   if (!sessions.has(from)) {
     sessions.set(from, {
       history: [],
+      stage: 0,                 // STAGE 0 → 4
       priceExplained: false,
       expensiveCount: 0,
       linkSentAt: null,
-      leadNotified: false,
+      humanNotified: false
     });
   }
   return sessions.get(from);
 }
 
 // ===================== HELPERS =====================
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function humanDelay(text) {
-  const len = text.length;
-  if (len <= 80) return sleep(3000);
-  if (len <= 240) return sleep(8000);
+  const l = text.length;
+  if (l <= 80) return sleep(3000);
+  if (l <= 240) return sleep(8000);
   return sleep(15000);
 }
 
-function normalize(t) {
-  return t
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .trim();
-}
+const normalize = (t) =>
+  t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
 
-function containsAny(t, arr) {
-  return arr.some((w) => t.includes(w));
-}
+const containsAny = (t, arr) => arr.some(w => t.includes(w));
 
 const isPriceQuestion = (t) =>
   containsAny(t, ["preco", "valor", "quanto", "custa", "investimento"]);
 
 const isCheckoutIntent = (t) =>
-  containsAny(t, [
-    "quero comprar",
-    "comprar",
-    "pagar",
-    "manda o link",
-    "link",
-    "pix",
-    "cartao",
-    "cartão",
-    "boleto",
-  ]);
+  containsAny(t, ["comprar", "pagar", "manda o link", "link", "pix", "cartao", "boleto"]);
 
 const isExpensive = (t) =>
-  containsAny(t, ["caro", "muito caro", "ta caro", "tá caro"]);
+  containsAny(t, ["caro", "muito caro", "ta caro", "tá caro", "sem dinheiro"]);
 
 function canSendLink(session) {
   if (!session.linkSentAt) return true;
   return Date.now() - session.linkSentAt > 120000;
 }
 
-function stripUrls(text) {
-  return text.replace(/https?:\/\/\S+/gi, "");
+function stripUrls(t) {
+  return t.replace(/https?:\/\/\S+/gi, "");
 }
 
 // ===================== LOG =====================
@@ -106,58 +87,58 @@ function log(type, msg) {
 }
 
 // ===================== WHATSAPP =====================
-async function enviarMensagem(para, texto) {
+async function enviarMensagem(to, body) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to: para,
-      text: { body: texto },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
+    { messaging_product: "whatsapp", to, text: { body } },
+    { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } }
   );
 }
 
-// ===================== AVISO HUMANO =====================
 async function avisarHumano(texto) {
-  await axios.post(
-    `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to: HUMAN_WHATSAPP_NUMBER,
-      text: { body: `🔥 LEAD QUENTE 🔥\n\n${texto}` },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
+  await enviarMensagem(
+    HUMAN_WHATSAPP_NUMBER,
+    `🔥 LEAD QUENTE 🔥\n\n${texto}`
   );
 }
 
 // ===================== PROMPT =====================
-function systemPrompt() {
+function systemPrompt(stage) {
   return `
 Você é Sarah, consultora premium da Sia Mega.
-Você conversa como humana real no WhatsApp Brasil.
+Você conversa como HUMANA REAL no WhatsApp Brasil.
 
 REGRAS:
 - 1 frase + 1 pergunta
-- Tom informal profissional
 - Nunca diga que é IA
-- Nunca envie link sem o cliente pedir
-- Sempre conduza para decisão
+- Tom natural e profissional
+- Nunca envie link sem pedido
+- Conduza sem pressão
+
+ESTÁGIO ATUAL DO LEAD: ${stage}
+
+COMPORTAMENTO:
+STAGE 0-1 → Conectar e perguntar
+STAGE 2 → Explicar valor e método
+STAGE 3 → Focar decisão
+STAGE 4 → Tratar objeção e fechar
+
+PRODUTO:
+Mapa Diamond é um método prático de renda online para iniciantes.
+Ensina passo a passo como criar fontes de renda digital,
+evitar erros comuns e aplicar estratégias simples que funcionam.
+
+BENEFÍCIOS:
+- Direção clara
+- Método validado
+- Menos tentativa e erro
+- Resultados reais
+- Suporte e acompanhamento
 
 PREÇO:
-Preço oficial: R$ ${PRICE_FULL}
-Oferta padrão HOJE: R$ ${PRICE_OFFER}
-R$ ${PRICE_SPECIAL} somente após 2 objeções de preço
+Valor: R$ ${PRICE_FULL}
+Oferta hoje: R$ ${PRICE_OFFER}
+R$ ${PRICE_SPECIAL} apenas após 2 objeções
 
 Finalize sempre com pergunta estratégica.
 `;
@@ -167,9 +148,8 @@ Finalize sempre com pergunta estratégica.
 app.get("/", (_, res) => res.send("✅ Bot online"));
 
 app.get("/webhook", (req, res) => {
-  const { "hub.mode": mode, "hub.verify_token": token, "hub.challenge": challenge } =
-    req.query;
-  if (mode === "subscribe" && token === VERIFY_TOKEN) return res.send(challenge);
+  const { "hub.mode": mode, "hub.verify_token": token, "hub.challenge": ch } = req.query;
+  if (mode === "subscribe" && token === VERIFY_TOKEN) return res.send(ch);
   return res.sendStatus(403);
 });
 
@@ -179,54 +159,57 @@ app.post("/webhook", async (req, res) => {
     if (!msg?.text?.body) return res.sendStatus(200);
 
     const from = msg.from;
-    const textRaw = msg.text.body;
-    const text = normalize(textRaw);
+    const raw = msg.text.body;
+    const t = normalize(raw);
     const session = getSession(from);
 
-    log("RECEBIDO", `${from}: ${textRaw}`);
+    log("RECEBIDO", `${from}: ${raw}`);
 
-    // PREÇO
-    if (isPriceQuestion(text)) {
-      session.priceExplained = true;
+    // ====== ATUALIZA STAGE ======
+    if (session.stage === 0 && session.history.length > 0) session.stage = 1;
+    if (containsAny(t, ["funciona", "como funciona", "suporte", "garantia"])) session.stage = Math.max(session.stage, 2);
+    if (isPriceQuestion(t) || isCheckoutIntent(t)) session.stage = 3;
+    if (isExpensive(t)) {
+      session.expensiveCount++;
+      session.stage = 4;
+    }
+
+    // ====== AVISA HUMANO (1x) ======
+    if (session.stage >= 3 && !session.humanNotified) {
+      await avisarHumano(`Número: ${from}\nEstágio: ${session.stage}\nMensagem: "${raw}"`);
+      session.humanNotified = true;
+    }
+
+    // ====== PREÇO ======
+    if (isPriceQuestion(t)) {
       const reply = `O valor é R$ ${PRICE_FULL}, mas hoje está com 35% OFF e sai por R$ ${PRICE_OFFER}. Isso faz sentido pra você agora?`;
       await humanDelay(reply);
       await enviarMensagem(from, reply);
       return res.sendStatus(200);
     }
 
-    // OBJEÇÃO
-    if (isExpensive(text)) session.expensiveCount++;
-
-    // INTENÇÃO DE COMPRA
-    if (isCheckoutIntent(text)) {
-      if (!session.leadNotified) {
-        await avisarHumano(`Número: ${from}\nMensagem: "${textRaw}"`);
-        session.leadNotified = true;
-      }
-
-      if (canSendLink(session)) {
-        session.linkSentAt = Date.now();
-        const reply = `Perfeito 🙂 Aqui está o link com a oferta de hoje:\n${LINK_OFFER}\n\nPrefere pagar à vista ou parcelado?`;
-        await humanDelay(reply);
-        await enviarMensagem(from, reply);
-      }
+    // ====== COMPRA ======
+    if (isCheckoutIntent(t) && canSendLink(session)) {
+      session.linkSentAt = Date.now();
+      const reply = `Perfeito 🙂 Aqui está o link com a oferta de hoje:\n${LINK_OFFER}\n\nPrefere pagar à vista ou parcelado?`;
+      await humanDelay(reply);
+      await enviarMensagem(from, reply);
       return res.sendStatus(200);
     }
 
-    // IA
+    // ====== IA ======
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: systemPrompt() },
+        { role: "system", content: systemPrompt(session.stage) },
         ...session.history.slice(-6),
-        { role: "user", content: textRaw },
-      ],
+        { role: "user", content: raw }
+      ]
     });
 
-    let reply = completion.choices[0].message.content;
-    reply = stripUrls(reply);
+    let reply = stripUrls(completion.choices[0].message.content);
 
-    session.history.push({ role: "user", content: textRaw });
+    session.history.push({ role: "user", content: raw });
     session.history.push({ role: "assistant", content: reply });
 
     await humanDelay(reply);
