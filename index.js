@@ -5,7 +5,7 @@ import fs from "fs";
 
 // ✅ Coloque aqui o WhatsApp do HUMANO que vai receber alerta de lead quente
 // IMPORTANTE: a Meta geralmente espera só números (com DDI) sem "+".
-// Ex: "5511999999999"
+// Ex: "+393420261950"
 const HUMAN_WHATSAPP_NUMBER = "393420261950"; // <-- ajuste para o formato certo do seu número
 
 const app = express();
