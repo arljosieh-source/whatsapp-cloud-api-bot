@@ -105,6 +105,7 @@ async function avisarHumano(texto) {
 // ===================== PROMPT =====================
 function systemPrompt(stage) {
   return `
+  
 Você é Sarah, consultora premium da Sia Mega.
 Você conversa como HUMANA REAL no WhatsApp Brasil.
 
@@ -139,6 +140,36 @@ PREÇO:
 Valor: R$ ${PRICE_FULL}
 Oferta hoje: R$ ${PRICE_OFFER}
 R$ ${PRICE_SPECIAL} apenas após 2 objeções
+━━━━━━━━━━━━━━━━━━━━━━
+GUARDIÃO DE PREÇO (REGRA ABSOLUTA)
+━━━━━━━━━━━━━━━━━━━━━━
+
+Você NUNCA lista vários preços ao mesmo tempo.
+
+Sempre siga esta ordem:
+
+1️⃣ Se perguntarem preço:
+“O valor é R$ 299, mas hoje está com 35% OFF e sai por R$ 195.”
+“Esse investimento faz sentido pro seu objetivo agora?”
+
+2️⃣ Se o cliente disser “está caro”:
+Valide primeiro.
+Faça perguntas.
+Construa valor.
+NÃO ofereça desconto imediatamente.
+
+3️⃣ Somente após DUAS objeções reais de preço:
+Você PODE mencionar que existe uma condição especial pontual.
+Você SÓ envia o valor R$ 125 se o cliente aceitar ouvir.
+
+4️⃣ Nunca:
+- Justifique demais o preço
+- Peça desculpa pelo valor
+- Compare com coisas baratas
+- Empurre desconto
+
+Preço transmite posicionamento.
+Você vende com calma e segurança.
 
 Finalize sempre com pergunta estratégica.
 `;
@@ -187,6 +218,11 @@ app.post("/webhook", async (req, res) => {
       await enviarMensagem(from, reply);
       return res.sendStatus(200);
     }
+    // ====== GUARD: limitar tamanho da resposta ======
+     if (reply.length > 500) {
+     reply = reply.slice(0, 480) + "...";
+     log("GUARD", "Resposta truncada");
+  }
 
     // ====== COMPRA ======
     if (isCheckoutIntent(t) && canSendLink(session)) {
@@ -196,21 +232,44 @@ app.post("/webhook", async (req, res) => {
       await enviarMensagem(from, reply);
       return res.sendStatus(200);
     }
+    // ====== GUARD: mensagem vazia ou inútil ======
+   if (text.length < 2) {
+   log("GUARD", "Mensagem muito curta ignorada");
+   return res.sendStatus(200);
+ }
+    // ====== GUARD: mensagem repetida ======
+   const lastUserMsg = session.history
+  .slice()
+  .reverse()
+  .find(m => m.role === "user");
+
+   if (lastUserMsg && normalize(lastUserMsg.content) === text) {
+  log("GUARD", "Mensagem repetida ignorada");
+   return res.sendStatus(200);
+  }
 
     // ====== IA ======
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
+    model: "gpt-4o-mini",
+    messages: [
         { role: "system", content: systemPrompt(session.stage) },
         ...session.history.slice(-6),
         { role: "user", content: raw }
       ]
     });
+    
+    // ====== GUARD: controle de preço ======
+    if (!session.priceExplained && reply.match(/R\$\s?\d+/)) {
+    reply = reply.replace(/R\$\s?\d+/g, "");
+    log("GUARD", "Preço removido da resposta da IA");
+  }
 
     let reply = stripUrls(completion.choices[0].message.content);
 
     session.history.push({ role: "user", content: raw });
     session.history.push({ role: "assistant", content: reply });
+    // ====== GUARD: delay mínimo ======
+    await sleep(1500);
 
     await humanDelay(reply);
     await enviarMensagem(from, reply);
