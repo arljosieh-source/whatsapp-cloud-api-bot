@@ -2,12 +2,10 @@ import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
 import fs from "fs";
-import path from "path";
-import os from "os";
 
 // ===================== CONFIG =====================
 const app = express();
-app.use(express.json({ limit: "25mb" })); // para aguentar payloads maiores
+app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 10000;
 
@@ -16,37 +14,44 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Número humano (somente números com DDI; sem +)
-// Ex Itália: 393420261950 | Brasil: 5511999999999
+// Número humano (apenas dígitos + país). Ex Itália: 393420261950
 const HUMAN_WHATSAPP_NUMBER =
-  process.env.HUMAN_WHATSAPP_NUMBER || "393420261950";
+  (process.env.HUMAN_WHATSAPP_NUMBER || "393420261950").replace(/\D/g, "");
 
 // ===================== PRODUTO =====================
 const PRODUCT_NAME = "Mapa Diamond";
 const PRICE_FULL = 299;
-const PRICE_OFFER = 195; // 35% OFF
-const PRICE_SPECIAL = 125; // só após >=2 objeções reais
+const PRICE_OFFER = 195;   // 35% OFF
+const PRICE_SPECIAL = 125; // só após >=2 objeções reais e com elegância
 
 const LINK_OFFER = "https://pay.kiwify.com.br/raiY3qd";
 const LINK_FULL = "https://pay.kiwify.com.br/UnJnvII";
 const LINK_SPECIAL = "https://pay.kiwify.com.br/hfNCals";
 
+// ===================== MODO (SUA ESCOLHA) =====================
+// Opção B: bot aquece e AVISA HUMANO quando lead quente.
+// Importante: agora não manda mensagem “já chamei consultor” sem necessidade.
+const HANDOFF_MODE = "B";
+const HANDOFF_PAUSE_MS = 5 * 60 * 1000; // 5 minutos
+
 // ===================== OPENAI =====================
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ===================== MEMÓRIA EM RAM =====================
+// ===================== SESSIONS (RAM) =====================
 const sessions = new Map();
 
 function getSession(from) {
   if (!sessions.has(from)) {
     sessions.set(from, {
       history: [],
-      stage: 0, // 0..4
+      stage: 0,                 // 0..4
       priceExplained: false,
       expensiveCount: 0,
-      linkSentAt: null,
-      humanNotified: false, // avisar humano só 1x
-      lastInboundId: null, // dedupe
+      linkSentAt: 0,
+      humanNotified: false,
+      handoffUntil: 0,
+      lastInboundId: null,       // dedupe
+      lastInboundHash: "",       // dedupe simples
     });
   }
   return sessions.get(from);
@@ -81,18 +86,17 @@ function isPriceQuestion(t) {
 }
 
 function isCheckoutIntent(t) {
-  // IMPORTANTE: não trate “link do site / explicar” como compra automática
-  // Só compra se ficar claro que é link de pagamento / pagar / comprar
   return containsAny(t, [
     "quero comprar",
     "quero fechar",
-    "comprar agora",
+    "comprar",
+    "pagar",
+    "manda o link",
+    "me manda o link",
+    "link de pagamento",
+    "link",
     "como pagar",
     "como pago",
-    "link de pagamento",
-    "manda o link de pagamento",
-    "me manda o link de pagamento",
-    "pagar",
     "pix",
     "cartao",
     "cartão",
@@ -124,17 +128,15 @@ function truncate(text, max = 700) {
   return text.slice(0, max - 3) + "...";
 }
 
-function safeAppend(file, line) {
-  try {
-    fs.appendFileSync(file, line);
-  } catch {}
+function hashText(s) {
+  return Buffer.from(s || "", "utf8").toString("base64").slice(0, 64);
 }
 
 // ===================== LOG =====================
 function log(type, msg, extra = "") {
   const line = `[${new Date().toISOString()}] [${type}] ${msg} ${extra}\n`;
   console.log(line);
-  safeAppend("bot.log", line);
+  try { fs.appendFileSync("bot.log", line); } catch {}
 }
 
 function registrarLeadQuente({ phone, motivo, mensagem }) {
@@ -145,10 +147,10 @@ NUMERO: ${phone}
 MOTIVO: ${motivo}
 MENSAGEM: ${mensagem}
 ========================\n`;
-  safeAppend("leads_quentes.txt", line);
+  try { fs.appendFileSync("leads_quentes.txt", line); } catch {}
 }
 
-// ===================== WHATSAPP SEND (texto) =====================
+// ===================== WHATSAPP SEND =====================
 async function enviarMensagem(to, body) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
@@ -158,98 +160,97 @@ async function enviarMensagem(to, body) {
         Authorization: `Bearer ${WHATSAPP_TOKEN}`,
         "Content-Type": "application/json",
       },
-      timeout: 20000,
+      timeout: 15000,
     }
   );
 }
 
-// ===================== WHATSAPP SEND (mídia) =====================
-async function enviarMidia(to, { type, link, caption }) {
-  // type: "image" | "video" | "audio" | "document"
-  // link: URL pública acessível (https)
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type,
-    [type]: { link },
-  };
-  if (caption && (type === "image" || type === "video" || type === "document")) {
-    payload[type].caption = caption;
-  }
-
-  await axios.post(
-    `https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`,
-    payload,
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 20000,
-    }
-  );
-}
-
-// ===================== AVISO HUMANO (silencioso p/ cliente) =====================
+// ===================== AVISO HUMANO =====================
 async function avisarHumano(texto) {
-  // AVISO INTERNO: não manda nada pro lead dizendo “chamei consultor”
   await enviarMensagem(HUMAN_WHATSAPP_NUMBER, `🔥 LEAD QUENTE 🔥\n\n${texto}`);
 }
 
-// ===================== WHATSAPP MEDIA: baixar arquivo =====================
-async function getMediaInfo(mediaId) {
-  // retorna { url, mime_type, sha256, file_size }
+// ===================== WHATSAPP MEDIA (download) =====================
+async function getMediaMeta(mediaId) {
   const r = await axios.get(`https://graph.facebook.com/v19.0/${mediaId}`, {
-    params: { fields: "url,mime_type,sha256,file_size" },
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-    timeout: 20000,
+    timeout: 15000,
   });
-  return r.data;
+  return r.data; // {url, mime_type, sha256, file_size, id}
 }
 
-async function downloadMediaToFile(url, filename) {
-  const outPath = path.join(os.tmpdir(), filename);
+async function downloadMediaBytes(url) {
   const r = await axios.get(url, {
     responseType: "arraybuffer",
     headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
     timeout: 30000,
   });
-  fs.writeFileSync(outPath, Buffer.from(r.data));
-  return outPath;
+  return Buffer.from(r.data);
 }
 
-function fileToBase64(filePath) {
-  const b = fs.readFileSync(filePath);
-  return b.toString("base64");
-}
+// ===================== OPENAI: áudio -> texto =====================
+async function transcribeAudio(buffer, mimeType = "audio/ogg") {
+  // Node 18+ tem Blob; File nem sempre. OpenAI SDK aceita Blob.
+  const blob = new Blob([buffer], { type: mimeType });
 
-// ===================== TRANSCRIÇÃO (áudio) =====================
-async function transcreverAudio(filePath) {
-  // Whisper funciona bem e é simples
-  const stream = fs.createReadStream(filePath);
-  const resp = await openai.audio.transcriptions.create({
-    file: stream,
+  // Whisper é bem estável
+  const tr = await openai.audio.transcriptions.create({
     model: "whisper-1",
+    file: blob,
   });
-  return (resp.text || "").trim();
+
+  // SDK pode retornar {text: "..."}
+  return (tr?.text || "").trim();
 }
 
-// ===================== RESPOSTAS PADRÃO (rápidas) =====================
+// ===================== OPENAI: imagem -> resposta =====================
+async function replyWithVision({ system, userText, imageBuffer, mimeType }) {
+  const b64 = imageBuffer.toString("base64");
+  const dataUrl = `data:${mimeType};base64,${b64}`;
+
+  const r = await openai.responses.create({
+    model: "gpt-4o-mini",
+    input: [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: userText },
+          { type: "input_image", image_url: dataUrl },
+        ],
+      },
+    ],
+  });
+
+  return (r.output_text || "").trim();
+}
+
+// ===================== OBJEÇÕES (respostas rápidas) =====================
 const OBJECTIONS = [
   {
     key: "funciona",
     match: (t) => t.includes("funciona"),
-    answer: "Funciona sim quando a pessoa aplica do jeito certo 🙂\nVocê quer usar isso mais pra aprender do zero ou pra começar a gerar renda?",
+    answer: "Funciona sim, quando a pessoa aplica do jeito certo 🙂\nVocê quer usar isso mais pra aprender do zero ou pra gerar renda?",
+  },
+  {
+    key: "tempo",
+    match: (t) => t.includes("quanto tempo") || (t.includes("resultado") && t.includes("tempo")),
+    answer: "Depende do seu ritmo e execução 🙂\nVocê pensa em curto ou médio prazo?",
+  },
+  {
+    key: "ja_tentei",
+    match: (t) => t.includes("ja tentei") || t.includes("já tentei") || t.includes("nao deu certo") || t.includes("não deu certo"),
+    answer: "Entendo, isso acontece quando falta direção.\nO que mais te travou naquela vez?",
+  },
+  {
+    key: "medo_dinheiro",
+    match: (t) => t.includes("medo") && t.includes("dinheiro"),
+    answer: "Faz sentido ter esse receio.\nSeu medo é mais de investir errado ou de continuar como tá hoje?",
   },
   {
     key: "suporte",
     match: (t) => t.includes("suporte"),
-    answer: "Tem suporte sim 😊\nPra você, ter acompanhamento faz diferença?",
-  },
-  {
-    key: "garantia",
-    match: (t) => t.includes("garantia"),
-    answer: "Tem garantia de 7 dias pra testar com segurança.\nIsso te deixaria mais tranquilo(a) pra decidir?",
+    answer: "Tem suporte sim 😊\nPra você, acompanhamento faz diferença?",
   },
   {
     key: "parcelar",
@@ -264,7 +265,7 @@ function systemPrompt(stage, expensiveCount) {
 Você é Sarah, consultora premium de orientação digital da Sia Mega.
 Você conversa no WhatsApp Brasil como uma HUMANA REAL: natural, educada, segura e estratégica.
 
-REGRAS OBRIGATÓRIAS:
+REGRAS:
 - Nunca diga que é IA, robô, sistema ou automação.
 - Estilo WhatsApp BR: curto, direto e humano.
 - 1 frase + 1 pergunta por mensagem.
@@ -273,32 +274,29 @@ REGRAS OBRIGATÓRIAS:
 - Pergunte mais do que explica.
 - Sempre conduza para o próximo passo.
 
-PRODUTO:
-${PRODUCT_NAME} é um método prático para iniciantes ganharem dinheiro online com estratégia e passo a passo.
-Benefícios (cite de forma curta): direção clara, menos tentativa e erro, ações simples, suporte, acesso imediato, garantia 7 dias.
-
 ESTÁGIO DO LEAD: STAGE_${stage}
 - STAGE_0/1: conexão + diagnóstico
 - STAGE_2: mostrar valor + clareza (sem preço)
-- STAGE_3: decisão (mais objetivo)
+- STAGE_3: decisão (objetivo: avançar)
 - STAGE_4: objeção de preço (validar, perguntar, construir valor)
 
-GUARDIÃO DO PREÇO (REGRA ABSOLUTA):
-- Se perguntarem preço: diga "R$ ${PRICE_FULL}, mas hoje está com 35% OFF por R$ ${PRICE_OFFER}" e pergunte se faz sentido.
-- Não liste vários valores.
-- NÃO mencione R$ ${PRICE_SPECIAL} a menos que expensiveCount >= 2 e você já fez perguntas.
-- Links de pagamento só se o cliente pedir claramente (link de pagamento / quero comprar / como pagar).
-- Se pedirem “link do site/explicação”, NÃO envie link de pagamento automaticamente; ofereça explicar em 1 minuto e pergunte o que ele quer saber.
+PRODUTO (use em frases curtas, sem textos longos):
+${PRODUCT_NAME} é um método prático pra iniciantes ganharem dinheiro online com passo a passo, ações simples, direção clara e suporte.
+Garantia: 7 dias. Acesso imediato após pagamento.
 
-LINKS (somente quando permitido):
+GUARDIÃO DE PREÇO (REGRA ABSOLUTA):
+- Se perguntarem preço: diga "R$ ${PRICE_FULL}, mas hoje está com 35% OFF por R$ ${PRICE_OFFER}" e pergunte se faz sentido.
+- Nunca liste vários preços.
+- NÃO mencione R$ ${PRICE_SPECIAL} a menos que: expensiveCount >= 2 e após perguntas.
+- Links só se o cliente pedir claramente.
+
+Links:
 - Oferta: ${LINK_OFFER}
 - Integral: ${LINK_FULL}
 - Especial (último recurso): ${LINK_SPECIAL}
 
-MÍDIA:
-- Se o cliente mandar imagem, descreva o que vê e pergunte o que ele quer fazer com isso.
-- Se mandar áudio, responda baseado no conteúdo transcrito e faça uma pergunta.
-- Se mandar documento e não der para ler, peça para ele dizer o que precisa ou colar o texto principal.
+IMPORTANTE:
+Se o cliente enviar mídia, responda com base no conteúdo e faça 1 pergunta estratégica.
 `;
 }
 
@@ -317,13 +315,13 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// ===================== WEBHOOK =====================
 app.post("/webhook", async (req, res) => {
-  // responde rápido pra Meta
+  // responde rápido 200 para evitar retries
   res.sendStatus(200);
 
   try {
-    const msg = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const value = req.body.entry?.[0]?.changes?.[0]?.value;
+    const msg = value?.messages?.[0];
     if (!msg) return;
 
     const from = msg.from;
@@ -331,122 +329,92 @@ app.post("/webhook", async (req, res) => {
 
     const session = getSession(from);
 
-    // dedupe (evita 2 respostas quando a Meta reenvia)
+    // DEDUPE: evita responder duas vezes ao mesmo evento
     if (messageId && session.lastInboundId === messageId) {
-      log("DEDUPE", `Ignorado duplicado`, `from=${from} id=${messageId}`);
+      log("DEDUPE", "Ignorado msg duplicada", `from=${from} id=${messageId}`);
       return;
     }
     session.lastInboundId = messageId;
 
-    // ==========================================
-    // 1) Extrair conteúdo (texto OU mídia)
-    // ==========================================
+    // Detecta tipo
+    const type = msg.type; // "text", "audio", "image", "document", "video", ...
     let rawText = "";
-    let media = null; // { kind, filePath, mime, caption, transcript, base64, dataUrl }
+    let t = "";
 
-    if (msg.type === "text") {
-      rawText = msg.text?.body || "";
-    } else if (msg.type === "audio") {
-      // áudio -> baixar -> transcrever
-      const mediaId = msg.audio?.id;
-      if (!mediaId) return;
-
-      log("IN_MEDIA", `audio from=${from}`, `id=${mediaId}`);
-
-      const info = await getMediaInfo(mediaId);
-      const filePath = await downloadMediaToFile(info.url, `audio_${mediaId}.ogg`);
-
-      let transcript = "";
-      try {
-        transcript = await transcreverAudio(filePath);
-      } catch (e) {
-        log("AUDIO_ERR", "Falha transcrição", e?.message || "");
-      }
-
-      // não trava se falhar
-      rawText = transcript
-        ? `ÁUDIO TRANSCRITO: ${transcript}`
-        : "Recebi seu áudio, mas não consegui transcrever aqui. Pode me mandar em texto o ponto principal?";
-
-      media = { kind: "audio", filePath, mime: info.mime_type, transcript };
-    } else if (msg.type === "image") {
-      const mediaId = msg.image?.id;
-      const caption = msg.image?.caption || "";
-      if (!mediaId) return;
-
-      log("IN_MEDIA", `image from=${from}`, `id=${mediaId}`);
-
-      const info = await getMediaInfo(mediaId);
-      const ext = (info.mime_type || "image/jpeg").includes("png") ? "png" : "jpg";
-      const filePath = await downloadMediaToFile(info.url, `img_${mediaId}.${ext}`);
-      const b64 = fileToBase64(filePath);
-      const dataUrl = `data:${info.mime_type || "image/jpeg"};base64,${b64}`;
-
-      rawText = caption ? `O cliente enviou uma imagem. Legenda: "${caption}"` : "O cliente enviou uma imagem.";
-      media = { kind: "image", filePath, mime: info.mime_type, caption, dataUrl };
-    } else if (msg.type === "video") {
-      const mediaId = msg.video?.id;
-      const caption = msg.video?.caption || "";
-      if (!mediaId) return;
-
-      log("IN_MEDIA", `video from=${from}`, `id=${mediaId}`);
-
-      // Vídeo: sem extração automática (pra não quebrar / não travar).
-      // A gente responde pedindo o objetivo.
-      rawText = caption
-        ? `O cliente enviou um VÍDEO com legenda: "${caption}".`
-        : "O cliente enviou um VÍDEO.";
-      media = { kind: "video", caption };
-    } else if (msg.type === "document") {
-      const mediaId = msg.document?.id;
-      const filename = msg.document?.filename || "arquivo";
-      if (!mediaId) return;
-
-      log("IN_MEDIA", `doc from=${from}`, `id=${mediaId} name=${filename}`);
-
-      const info = await getMediaInfo(mediaId);
-      const filePath = await downloadMediaToFile(info.url, `doc_${mediaId}_${filename}`);
-
-      // Se for .txt ou texto, tenta ler
-      let docText = "";
-      if ((info.mime_type || "").startsWith("text/") || filename.toLowerCase().endsWith(".txt")) {
-        try {
-          docText = fs.readFileSync(filePath, "utf8").slice(0, 5000);
-        } catch {}
-      }
-
-      rawText = docText
-        ? `DOCUMENTO (texto) enviado. Conteúdo:\n${docText}`
-        : `Recebi seu documento "${filename}". Me diz o que você quer que eu analise nele?`;
-      media = { kind: "document", filePath, mime: info.mime_type, filename, docText };
-    } else {
-      // outros tipos
-      rawText = "Recebi sua mensagem, mas não consegui ler o formato. Você consegue me mandar em texto?";
+    // ---------- TEXT ----------
+    if (type === "text" && msg.text?.body) {
+      rawText = msg.text.body.trim();
+      t = normalize(rawText);
     }
 
-    if (!rawText || rawText.trim().length < 1) return;
-
-    const t = normalize(rawText);
-
-    log("IN", `${from}`, `"${rawText}" stage=${session.stage}`);
-
-    // ==========================================
-    // 2) Atualizar STAGE
-    // ==========================================
-    if (session.stage === 0 && session.history.length > 0) session.stage = 1;
-    if (isInterested(t)) session.stage = Math.max(session.stage, 2);
-    if (isPriceQuestion(t) || isCheckoutIntent(t)) session.stage = 3;
-
-    if (isExpensive(t)) {
-      session.expensiveCount += 1;
-      session.stage = 4;
+    // ---------- AUDIO ----------
+    if (type === "audio" && msg.audio?.id) {
+      log("IN", `${from}`, `audio id=${msg.audio.id}`);
+      const meta = await getMediaMeta(msg.audio.id);
+      const bytes = await downloadMediaBytes(meta.url);
+      const transcript = await transcribeAudio(bytes, meta.mime_type || "audio/ogg");
+      rawText = transcript ? `ÁUDIO (transcrito): ${transcript}` : "ÁUDIO: (não consegui transcrever)";
+      t = normalize(transcript || "");
+      log("AUDIO_TXT", `${from}`, `"${transcript || "SEM_TEXTO"}"`);
     }
 
-    // ==========================================
-    // 3) Avisar HUMANO (1x) quando lead quente (stage>=3)
-    //    IMPORTANTE: NÃO envia “chamei consultor” pro cliente.
-    // ==========================================
-    if (session.stage >= 3 && !session.humanNotified) {
+    // ---------- IMAGE ----------
+    let imageBytes = null;
+    let imageMime = null;
+    if (type === "image" && msg.image?.id) {
+      log("IN", `${from}`, `image id=${msg.image.id}`);
+      const meta = await getMediaMeta(msg.image.id);
+      imageBytes = await downloadMediaBytes(meta.url);
+      imageMime = meta.mime_type || "image/jpeg";
+      rawText = "IMAGEM recebida";
+      t = ""; // texto não vem, então regras textuais não disparam
+    }
+
+    // ---------- DOCUMENT/VIDEO/OTHER ----------
+    if (!rawText && (type === "document" || type === "video" || type === "sticker")) {
+      // não travar: responder pedindo contexto
+      const reply = "Recebi seu arquivo 🙂\nEm 1 frase: o que você quer que eu veja nele?";
+      await humanDelay(reply);
+      await enviarMensagem(from, reply);
+
+      session.history.push({ role: "user", content: `[${type}]` });
+      session.history.push({ role: "assistant", content: reply });
+      return;
+    }
+
+    if (!rawText && type !== "image") {
+      // nada processável
+      return;
+    }
+
+    // Guard: mensagem repetida (texto)
+    if (rawText) {
+      const inboundHash = hashText(rawText);
+      if (session.lastInboundHash === inboundHash) {
+        log("DEDUPE", "Ignorado msg repetida por hash", `from=${from}`);
+        return;
+      }
+      session.lastInboundHash = inboundHash;
+    }
+
+    log("IN", `${from}`, `type=${type} stage=${session.stage} text="${rawText}"`);
+
+    // ===================== UPDATE STAGE (só se tiver texto analisável) =====================
+    if (type === "text" || type === "audio") {
+      if (session.stage === 0 && session.history.length > 0) session.stage = 1;
+      if (isInterested(t)) session.stage = Math.max(session.stage, 2);
+      if (isPriceQuestion(t) || isCheckoutIntent(t)) session.stage = 3;
+
+      if (isExpensive(t)) {
+        session.expensiveCount += 1;
+        session.stage = 4;
+      }
+    }
+
+    // ===================== AVISO HUMANO (1x) =====================
+    // Aviso humano acontece, mas SEM mandar mensagem “consultor” pro cliente automaticamente.
+    // E NÃO bloqueia o envio do link quando o cliente pede.
+    if (HANDOFF_MODE === "B" && session.stage >= 3 && !session.humanNotified) {
       await avisarHumano(`Número: ${from}\nStage: ${session.stage}\nMsg: "${rawText}"`);
       registrarLeadQuente({
         phone: from,
@@ -454,52 +422,26 @@ app.post("/webhook", async (req, res) => {
         mensagem: rawText,
       });
       session.humanNotified = true;
+      session.handoffUntil = Date.now() + HANDOFF_PAUSE_MS;
     }
 
-    // ==========================================
-    // 4) Fluxos SEM IA (controle duro)
-    // ==========================================
+    // ===================== PRIORIDADE: LINK (se pediu) =====================
+    // Se o cliente pedir link/comprar, NUNCA mande a frase do consultor.
+    if (type === "text" || type === "audio") {
+      if (isCheckoutIntent(t)) {
+        if (!canSendLink(session)) {
+          const reply = "Perfeito.\nVocê prefere pagar à vista ou parcelado?";
+          await humanDelay(reply);
+          await enviarMensagem(from, reply);
 
-    // 4.1) Preço (guardião)
-    if (isPriceQuestion(t)) {
-      session.priceExplained = true;
-      const reply =
-        `O valor é R$ ${PRICE_FULL}, mas hoje está com 35% OFF e sai por R$ ${PRICE_OFFER} 🙂\nFaz sentido pro seu objetivo agora?`;
-      await humanDelay(reply);
-      await enviarMensagem(from, reply);
+          session.history.push({ role: "user", content: rawText });
+          session.history.push({ role: "assistant", content: reply });
+          return;
+        }
 
-      session.history.push({ role: "user", content: rawText });
-      session.history.push({ role: "assistant", content: reply });
-      return;
-    }
-
-    // 4.2) Intent compra -> manda link (somente aqui)
-    if (isCheckoutIntent(t)) {
-      if (!canSendLink(session)) {
-        const reply = "Perfeito.\nVocê prefere pagar à vista ou parcelado?";
-        await humanDelay(reply);
-        await enviarMensagem(from, reply);
-
-        session.history.push({ role: "user", content: rawText });
-        session.history.push({ role: "assistant", content: reply });
-        return;
-      }
-
-      session.linkSentAt = Date.now();
-      const reply =
-        `Fechado 🙂\nAqui está o link com a oferta de hoje (R$ ${PRICE_OFFER}):\n${LINK_OFFER}\nPrefere pagar à vista ou parcelado?`;
-      await humanDelay(reply);
-      await enviarMensagem(from, reply);
-
-      session.history.push({ role: "user", content: rawText });
-      session.history.push({ role: "assistant", content: reply });
-      return;
-    }
-
-    // 4.3) Objeções padrão (rápidas)
-    for (const item of OBJECTIONS) {
-      if (item.match(t)) {
-        const reply = item.answer;
+        session.linkSentAt = Date.now();
+        const reply =
+          `Fechado 🙂\nAqui está o link com a oferta de hoje (R$ ${PRICE_OFFER}):\n${LINK_OFFER}\nPrefere pagar à vista ou parcelado?`;
         await humanDelay(reply);
         await enviarMensagem(from, reply);
 
@@ -509,89 +451,105 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // ==========================================
-    // 5) IA (texto + imagem + áudio transcrito)
-    // ==========================================
+    // ===================== Handoff pausa (5 min) =====================
+    // Durante a pausa, o bot só faz “checkpoint” curto — MAS ainda responde preço se perguntarem.
+    if (HANDOFF_MODE === "B" && session.handoffUntil && Date.now() < session.handoffUntil) {
+      // deixa passar preço normalmente abaixo; aqui só bloqueia IA longa
+      if (type === "text" || type === "audio") {
+        if (!isPriceQuestion(t)) {
+          const reply = "Entendi 🙂\nMe diz só: seu objetivo é renda extra ou algo mais consistente?";
+          await humanDelay(reply);
+          await enviarMensagem(from, reply);
+
+          session.history.push({ role: "user", content: rawText });
+          session.history.push({ role: "assistant", content: reply });
+          return;
+        }
+      }
+    }
+
+    // ===================== OBJEÇÕES (texto/áudio) =====================
+    if (type === "text" || type === "audio") {
+      for (const item of OBJECTIONS) {
+        if (item.match(t)) {
+          const reply = item.answer;
+          await humanDelay(reply);
+          await enviarMensagem(from, reply);
+
+          session.history.push({ role: "user", content: rawText });
+          session.history.push({ role: "assistant", content: reply });
+          return;
+        }
+      }
+    }
+
+    // ===================== PREÇO (guardião) =====================
+    if (type === "text" || type === "audio") {
+      if (isPriceQuestion(t)) {
+        session.priceExplained = true;
+        const reply =
+          `O valor é R$ ${PRICE_FULL}, mas hoje está com 35% OFF e sai por R$ ${PRICE_OFFER} 🙂\nFaz sentido pro seu objetivo agora?`;
+        await humanDelay(reply);
+        await enviarMensagem(from, reply);
+
+        session.history.push({ role: "user", content: rawText });
+        session.history.push({ role: "assistant", content: reply });
+        return;
+      }
+    }
+
+    // ===================== IA =====================
+    const sys = systemPrompt(session.stage, session.expensiveCount);
+
     let reply = "";
 
-    // Se for imagem: chama modelo com imagem
-    if (media?.kind === "image" && media.dataUrl) {
-      // Responses API (mais confiável pra multimodal)
-      const resp = await openai.responses.create({
-        model: "gpt-4o-mini",
-        input: [
-          { role: "system", content: systemPrompt(session.stage, session.expensiveCount) },
-          {
-            role: "user",
-            content: [
-              { type: "input_text", text: rawText },
-              { type: "input_image", image_url: media.dataUrl },
-            ],
-          },
-        ],
+    // IMAGEM: usar visão
+    if (type === "image" && imageBytes) {
+      const userText = "O cliente enviou uma imagem. Entenda o conteúdo e responda como Sarah, mantendo regras (curto + 1 pergunta estratégica).";
+      reply = await replyWithVision({
+        system: sys,
+        userText,
+        imageBuffer: imageBytes,
+        mimeType: imageMime || "image/jpeg",
       });
-
-      reply = (resp.output_text || "").trim();
     } else {
-      // Texto normal (inclui áudio transcrito / doc texto)
+      // TEXTO / ÁUDIO transcrito
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: systemPrompt(session.stage, session.expensiveCount) },
+          { role: "system", content: sys },
           ...session.history.slice(-8),
           { role: "user", content: rawText },
         ],
       });
-
-      reply = completion.choices?.[0]?.message?.content?.trim() || "";
+      reply = completion.choices?.[0]?.message?.content?.trim() || "Entendi 🙂\nQual é seu objetivo principal hoje?";
     }
 
-    if (!reply) reply = "Entendi.\nMe diz seu objetivo com isso pra eu te orientar certinho?";
-
-    // ==========================================
-    // 6) GUARDIÕES FINAIS
-    // ==========================================
-
-    // Limita tamanho
     reply = truncate(reply, 700);
 
-    // Nunca manda link se não for checkout
-    // (se IA escapou, troca por [link])
-    reply = stripUrls(reply);
-
-    // Se ainda não explicou preço e o cliente NÃO perguntou preço, remove valores
-    if (!session.priceExplained && !isPriceQuestion(t)) {
-      reply = reply.replace(/R\$\s?\d+(\,\d+)?/g, "").trim();
+    // GUARD: não mandar link se cliente não pediu
+    if (!(type === "text" || type === "audio") || !isCheckoutIntent(t)) {
+      reply = stripUrls(reply);
     }
 
-    // Nunca soltar 125 antes de >=2 objeções
+    // GUARD: não falar preço do nada (só se perguntou preço)
+    if (!session.priceExplained && !(type === "text" || type === "audio" ? isPriceQuestion(t) : false)) {
+      reply = reply.replace(/R\$\s?\d+([.,]\d+)?/g, "").trim();
+    }
+
+    // GUARD: 125 só após 2 objeções
     if (session.expensiveCount < 2) {
       reply = reply.replace(/\b125\b/g, `${PRICE_OFFER}`);
     }
 
-    // Se for vídeo/documento não-lido, não inventar: pede objetivo
-    if (media?.kind === "video") {
-      reply = "Recebi o vídeo.\nO que você quer que eu analise nele exatamente?";
-    }
-    if (media?.kind === "document" && !media.docText) {
-      reply = `Recebi seu arquivo.\nVocê quer que eu resuma, extraia pontos principais ou procure alguma informação específica?`;
-    }
-
-    // ==========================================
-    // 7) Salvar histórico e responder
-    // ==========================================
-    session.history.push({ role: "user", content: rawText });
+    // salva histórico
+    session.history.push({ role: "user", content: rawText || `[${type}]` });
     session.history.push({ role: "assistant", content: reply });
 
-    log("OUT", `${from}`, `"${reply}" stage=${session.stage}`);
+    log("OUT", `${from}`, `stage=${session.stage} reply="${reply}"`);
 
     await humanDelay(reply);
     await enviarMensagem(from, reply);
-
-    // Limpa arquivo temporário (quando existir)
-    try {
-      if (media?.filePath && fs.existsSync(media.filePath)) fs.unlinkSync(media.filePath);
-    } catch {}
   } catch (e) {
     log("ERROR", "Webhook falhou", e?.response?.data ? JSON.stringify(e.response.data) : e?.message);
   }
