@@ -14,7 +14,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Número humano (somente números + DDI). Ex: Brasil: 5511999999999
+// Número humano (somente números + DDI). Ex: Brasil: 5573998498514
 const HUMAN_WHATSAPP_NUMBER = process.env.HUMAN_WHATSAPP_NUMBER || "393420261950";
 
 // Produto / preço / links
@@ -244,9 +244,29 @@ function systemPrompt(stage, expensiveCount) {
   // Seu texto longo do produto vira BASE — mas a IA deve sempre responder curto.
   const productInfoCompact = `
 Produto: ${PRODUCT_NAME}.
-É um método prático e comprovado pra iniciantes ganharem dinheiro online com direção e passo a passo.
-Promessa central: caminho rápido com estratégia validada, menos tentativa e erro, ações simples e escaláveis.
-Inclui: acesso imediato, suporte, garantia de 7 dias, e um processo claro pra sair do zero.
+O Mapa Diamond é um método estratégico de renda digital criado para quem está começando do zero ou já tentou ganhar dinheiro online e não teve resultado.
+
+Ele não promete atalhos irreais nem depende de sorte.
+A proposta é simples: mostrar, passo a passo, o que fazer, quando fazer e como aplicar ações práticas que realmente funcionam no digital.
+
+O foco é dar direção clara.
+Em vez de testar tudo no escuro, a pessoa segue um processo organizado, com menos tentativa e erro e mais consciência das decisões que está tomando.
+
+É um método pensado para iniciantes:
+não exige aparecer,
+não exige CNPJ no início
+e não depende de vender cursos ou entrar em pirâmides.
+
+A pessoa recebe acesso imediato, aprende o processo de forma progressiva e conta com suporte e acompanhamento durante a aplicação.
+Existe também garantia de 7 dias, para que ela possa avaliar com segurança.
+
+O Mapa Diamond não é sobre prometer resultados rápidos.
+É sobre consistência com direção, estratégia validada e construção real de renda online.
+
+Sempre conduza a conversa de forma leve, humana e sem pressão.
+Use essas informações para esclarecer, não para discursar.
+Finalize com uma pergunta estratégica.
+
 `;
 
   return `
