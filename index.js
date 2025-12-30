@@ -179,7 +179,8 @@ Regras:
 - Linguagem simples e natural
 
 Produto:
-${PRODUCT_NAME} é um método prático e validado para iniciantes criarem renda digital com direção.
+${PRODUCT_NAME} é um método simples e direto para quem quer começar já vendendo. 
+Você recebe um curso completo, materiais editáveis e aulas curtas que mostram passo a passo como divulgar e lucrar, mesmo sem aparecer.
 
 Estágio: STAGE_${stage}
 
