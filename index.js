@@ -185,10 +185,6 @@ function isExpensive(t) {
   ]);
 }
 
-function isExpensive(t) {
-  return containsAny(t, ["caro", "muito caro", "ta caro", "tá caro"]);
-}
-
 function isConfused(t) {
   return containsAny(t, [
     "como assim",
