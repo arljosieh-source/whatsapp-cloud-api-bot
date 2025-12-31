@@ -285,14 +285,26 @@ async function handleWebhook(body) {
 
     const raw = msg.text.body;
     const t = normalize(raw);
+    
+if (t.length > 15) {
+  session.confusionHandled = false;
+}
 
-    // 🛡️ Guardião 1 — confuso
-    if (isConfusingMessage(t)) {
-      const reply = "Claro 🙂\nQual parte você quer que eu explique melhor?";
-      await humanDelay(reply);
-      await enviarMensagem(from, reply);
-      return;
-    }
+// 🛡️ Guardião — mensagem confusa (ANTI-LOOP)
+if (isConfusingMessage(t) && !session.confusionHandled) {
+  session.confusionHandled = true; // marca que já tratou
+
+  const reply =
+    "Claro 🙂\nQual parte você quer que eu explique melhor: *como funciona*, *pra quem é* ou *valor*?";
+
+  await humanDelay(reply);
+  await enviarMensagem(from, reply);
+
+  session.history.push({ role: "user", content: raw });
+  session.history.push({ role: "assistant", content: reply });
+
+  return;
+}
 
     // 🛡️ Guardião 5 — repetição
     if (session.lastUserTextNorm === t) {
