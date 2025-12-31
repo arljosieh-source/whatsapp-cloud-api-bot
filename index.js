@@ -94,7 +94,7 @@ function normalize(t) {
 const containsAny = (t, arr) => arr.some((w) => t.includes(w));
 
 const isPriceQuestion = (t) =>
-  containsAny(t, ["preco", "preço", "valor", "quanto", "custa"]);
+  containsAny(t, ["preco", "preço", "valor", "quanto", "custa", "mensalidade"]);
 
 const isCheckoutIntent = (t) =>
   containsAny(t, [
@@ -111,8 +111,21 @@ const isCheckoutIntent = (t) =>
 const isExpensive = (t) =>
   containsAny(t, ["caro", "ta caro", "sem dinheiro", "apertado"]);
 
-const isConfused = (t) =>
-  containsAny(t, ["como assim", "nao entendi", "não entendi", "hã", "hein"]);
+function isConfusingMessage(t) {
+  return (
+    t.length <= 12 ||
+    [
+      "como assim",
+      "nao entendi",
+      "não entendi",
+      "hã",
+      "hein",
+      "explica",
+      "explica melhor",
+      "oi?",
+    ].includes(t)
+  );
+}
 
 const truncate = (t, max = 700) =>
   t.length > max ? t.slice(0, max - 3) + "..." : t;
@@ -253,6 +266,7 @@ app.post("/webhook", (req, res) => {
   handleWebhook(req.body).catch((e) => log("ERR", e.message));
 });
 
+// ===================== CORE =====================
 async function handleWebhook(body) {
   const msg = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   if (!msg) return;
@@ -272,20 +286,31 @@ async function handleWebhook(body) {
     const raw = msg.text.body;
     const t = normalize(raw);
 
-    if (t.length < 2) {
-      const reply =
-        "Me explica só um pouquinho mais 🙂\nVocê quer renda extra ou algo mais consistente?";
+    // 🛡️ Guardião 1 — confuso
+    if (isConfusingMessage(t)) {
+      const reply = "Claro 🙂\nQual parte você quer que eu explique melhor?";
       await humanDelay(reply);
       await enviarMensagem(from, reply);
       return;
     }
 
-    if (isConfused(t)) {
+    // 🛡️ Guardião 5 — repetição
+    if (session.lastUserTextNorm === t) {
       const reply =
-        "Claro 🙂\nVocê quer entender *como funciona* ou *se funciona pra você*?";
+        "Entendi 🙂\nVocê quer entender como funciona ou saber se faz sentido pra você?";
       await humanDelay(reply);
       await enviarMensagem(from, reply);
       return;
+    }
+    session.lastUserTextNorm = t;
+
+    // Objeções diretas
+    for (const o of OBJECTIONS) {
+      if (o.match(t)) {
+        await humanDelay(o.reply);
+        await enviarMensagem(from, o.reply);
+        return;
+      }
     }
 
     if (isPriceQuestion(t)) {
@@ -296,27 +321,29 @@ async function handleWebhook(body) {
     }
 
     if (isCheckoutIntent(t)) {
-      const reply = `Perfeito 🙂\nAqui está o link com a oferta de hoje:\n${LINK_OFFER}`;
+      const reply = `Perfeito 🙂\nAqui está o link da oferta:\n${LINK_OFFER}`;
       await humanDelay(reply);
       await enviarMensagem(from, reply);
       return;
     }
 
+    // IA
     let reply;
     try {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           { role: "system", content: systemPrompt(session.stage, session.expensiveCount) },
-          ...session.history.slice(-6),
+          ...session.history.slice(-8),
           { role: "user", content: raw },
         ],
       });
-      reply =
-        completion.choices[0].message.content ||
-        "Me conta um pouco do seu objetivo 🙂";
-    } catch {
-      reply = "Me conta um pouco do seu objetivo 🙂";
+      reply = completion?.choices?.[0]?.message?.content?.trim();
+    } catch {}
+
+    // 🛡️ Guardião 2 + 6 — fallback absoluto
+    if (!reply || reply.length < 3) {
+      reply = "Me explica melhor o que você está buscando agora 🙂";
     }
 
     reply = truncate(stripUrls(reply));
